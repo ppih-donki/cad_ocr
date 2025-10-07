@@ -1,86 +1,96 @@
-// script.js : PDF/画像 → 棚矩形検出 + OCR（Tesseract.js v5） → CSV/JSON
+// script.js
 (() => {
+  // --- DOM refs ---
   const $ = (id)=>document.getElementById(id);
-  const logEl=$("log"), canvas=$("canvas"), ctx=canvas.getContext("2d");
-  const cvState=$("opencvState"), pdfState=$("pdfjsState"), tessState=$("tessState");
+  const canvas = $("canvas");
+  const ctx = canvas.getContext("2d");
+  const logEl = $("log");
+  const cvState = $("opencvState");
+  const pdfState = $("pdfjsState");
+  const tessState = $("tessState");
 
-  let fileBlob=null, shelfRects=[], tessWorker=null, tessReady=false;
+  // GitHub Pages でも狂わないベース（index.html と同じ階層に vendor/ がある前提）
+  const BASE = (document.baseURI || location.href).replace(/[#?].*$/,'').replace(/\/[^/]*$/,'/');
 
-  const log = (m)=>{ if(!logEl) return; logEl.textContent += m+"\n"; logEl.scrollTop=logEl.scrollHeight; };
+  // --- State ---
+  let fileBlob = null;
+  let shelfRects = [];
+  let opencvReady = false;
+  let pdfjsReady = false;
 
-  // ------- OpenCV / pdf.js の準備待ち -------
+  // Tesseract worker（v4 / v5 ともにこれでOK）
+  let tessWorker = null;
+  let tessReady  = false;
+
+  // --- helpers ---
+  const log = (m)=>{ logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+
   const waitOpenCV = new Promise((resolve)=>{
-    const ok=()=>{ cvState?.classList.add("ok"); cvState&&(cvState.textContent="OpenCVjs: OK"); resolve(); };
-    if (typeof cv!=="undefined" && cv.onRuntimeInitialized) cv.onRuntimeInitialized = ok;
-    else {
-      const iv=setInterval(()=>{ if (typeof cv!=="undefined" && cv.Mat){ clearInterval(iv); ok(); }},100);
-    }
+    const ok = () => {
+      opencvReady = true;
+      cvState.textContent = "OpenCV.js: OK";
+      cvState.classList.add("ok");
+      resolve();
+    };
+    if (typeof cv !== "undefined" && cv?.Mat) return ok();
+    const iv = setInterval(()=>{ if (typeof cv !== "undefined" && cv?.Mat){ clearInterval(iv); ok(); } }, 100);
   });
+
   const waitPDFJS = new Promise((resolve)=>{
-    const setOk=()=>{ pdfState?.classList.add("ok"); pdfState&&(pdfState.textContent="pdf.js: OK"); resolve(); };
-    const lib=window['pdfjs-dist/build/pdf'];
-    if (lib && lib.getDocument) setOk();
-    else {
-      const iv=setInterval(()=>{ const l=window['pdfjs-dist/build/pdf']; if (l && l.getDocument){ clearInterval(iv); setOk(); } },100);
-    }
+    const ok = () => {
+      pdfjsReady = true;
+      pdfState.textContent = "pdf.js: OK";
+      pdfState.classList.add("ok");
+      resolve();
+    };
+    const lib = window['pdfjs-dist/build/pdf'];
+    if (lib?.getDocument) return ok();
+    const iv = setInterval(()=>{
+      const l = window['pdfjs-dist/build/pdf'];
+      if (l?.getDocument){ clearInterval(iv); ok(); }
+    }, 100);
   });
 
-  // ------- 言語コードを正規化（"eng（数字中心）" → "eng" 等） -------
-  function normalizeLang(val){
-    const m = String(val||"").toLowerCase().match(/\b[a-z]+(?:\+[a-z]+)*\b/);
-    return m ? m[0] : "eng";
-  }
-
-  // ------- Tesseract 初期化（詳細ログ付き）-------
+  // v4/v5 どちらでも安全に通る Tesseract 初期化
   async function ensureTesseract(lang){
     if (tessWorker && tessReady) return;
-    if (!window.Tesseract){ log("Tesseract.js が読み込まれていません。"); return; }
 
-    // 末尾スラッシュ必須
-    const workerPath = "./vendor/tesseract/worker.min.js";
-    const corePath   = "./vendor/tesseract/tesseract-core.wasm.js";
-    const langPath   = "./vendor/tesseract/lang-data/";
+    if (!window.Tesseract){
+      tessState.textContent = "Tesseract: 未読み込み";
+      log("Tesseract.js が読み込まれていません.");
+      return;
+    }
+
+    // 絶対URL化（Worker からの相対解決ブレ対策）
+    const workerPath = new URL("vendor/tesseract/worker.min.js", BASE).href;
+    const corePath   = new URL("vendor/tesseract/tesseract-core.wasm.js", BASE).href;
+    const langPath   = new URL("vendor/tesseract/lang-data", BASE).href;
 
     try{
-      log(`Init Tesseract: worker=${workerPath}, core=${corePath}, langPath=${langPath}, lang=${lang}`);
-
-      // 言語ファイルの事前存在チェック
-      const testUrl = `${langPath}${lang}.traineddata`;
-      const head = await fetch(testUrl, { method:"HEAD" });
-      log(`HEAD ${testUrl} => ${head.status}`);
-      if (!head.ok){
-        log(`✗ 言語ファイルが見つかりません: ${testUrl} (status ${head.status})`);
-        throw new Error(`traineddata not found: ${testUrl}`);
-      } else {
-        log(`✓ 言語ファイル検出: ${testUrl}`);
-      }
-
-      log("createWorker() 開始");
-      // logger は渡さない（DataCloneError 回避）
+      log(`Init Tesseract: worker=${workerPath}, core=${corePath}`);
+      // v5 も v4 もこの形でOK（不要オプションは渡さない）
       tessWorker = await Tesseract.createWorker({ workerPath, corePath, langPath });
-      log("createWorker() 完了");
 
-      log("loadLanguage() 開始");
+      // v4/v5 共通の流れ
+      if (tessWorker.load)        await tessWorker.load();           // v5 では存在、v4 では no-op
       await tessWorker.loadLanguage(lang);
-      log("loadLanguage() 完了");
-
-      log("initialize() 開始");
       await tessWorker.initialize(lang);
-      log("initialize() 完了");
 
       tessReady = true;
-      tessState?.classList.add("ok");
-      tessState&&(tessState.textContent="Tesseract: OK");
+      tessState.textContent = "Tesseract: OK";
+      tessState.classList.add("ok");
+
+      // 進捗ロガーは渡さない（postMessage で clone 不可のため）
       log("Tesseract initialized.");
     }catch(err){
       tessReady = false;
-      tessState&&(tessState.textContent="Tesseract: 初期化失敗");
+      tessState.textContent = "Tesseract: 初期化失敗";
       log("Tesseract init error: " + (err?.message || String(err)));
       throw err;
     }
   }
 
-  // ------- UI -------
+  // --- UI events ---
   $("fileInput").addEventListener("change",(e)=>{
     fileBlob = e.target.files?.[0] ?? null;
     log(`選択: ${fileBlob ? fileBlob.name : "(なし)"}`);
@@ -89,56 +99,91 @@
   $("runBtn").addEventListener("click", async ()=>{
     if (!fileBlob){ alert("ファイルを選択してください"); return; }
 
-    const useOCR = $("useOCR").checked;
-    const lang = normalizeLang($("ocrLang").value);
-    const numericOnly = $("ocrNumeric").checked;
-    const scale = Math.max(1, parseFloat($("ocrScale").value)||2);
+    const useOCR     = $("useOCR").checked;
+    const lang       = $("ocrLang").value;
+    const numericOnly= $("ocrNumeric").checked;
+    const scale      = Math.max(1, parseFloat($("ocrScale").value)||2);
 
-    const normW=+( $("normW").value || 1240), normH=+( $("normH").value || 1754);
-    const dpi=+( $("dpi").value || 300);
-    const minArea=+( $("minArea").value || 800);
-    const minRect=+( $("minRect").value || 0.70);
-    const maxAsp=+( $("maxAsp").value || 25);
+    const normW = parseInt($("normW").value)||1240;
+    const normH = parseInt($("normH").value)||1754;
+    const dpi   = parseInt($("dpi").value)||300;
+    const minArea = parseFloat($("minArea").value)||800;
+    const minRect = parseFloat($("minRect").value)||0.7;
+    const maxAsp  = parseFloat($("maxAsp").value)||25;
 
     try{
-      await waitOpenCV; await waitPDFJS;
-      if (useOCR) await ensureTesseract(lang);
+      await waitOpenCV;
+      await waitPDFJS;
+      if (useOCR) await ensureTesseract(lang);   // ← ここでのみ初期化
 
-      shelfRects=[]; ctx.clearRect(0,0,canvas.width,canvas.height);
+      shelfRects = [];
+      ctx.clearRect(0,0,canvas.width,canvas.height);
 
       const isPdf = fileBlob.type === "application/pdf" || /\.pdf$/i.test(fileBlob.name);
       if (isPdf){
-        log("PDF → 画像レンダリング開始");
         const pages = await renderPdfToImages(fileBlob, dpi);
         log(`PDFページ数: ${pages.length}`);
         if (pages.length) drawPreview(pages[0].img);
+
         for (const page of pages){
           const rects = detectRects(page.img, page.pageIndex, normW, normH,
             {minArea, minRectangularity:minRect, maxAspect:maxAsp});
-          if (useOCR) await runOCRForRects(rects, page.img, {numericOnly, scale});
+          if (useOCR && rects.length) await runOCRForRects(rects, page.img, {lang, numericOnly, scale});
           shelfRects.push(...rects);
         }
       }else{
-        log("画像処理開始");
         const img = await blobToImage(fileBlob);
         drawPreview(img);
         const rects = detectRects(img, 0, normW, normH,
           {minArea, minRectangularity:minRect, maxAspect:maxAsp});
-        if (useOCR) await runOCRForRects(rects, img, {numericOnly, scale});
+        if (useOCR && rects.length) await runOCRForRects(rects, img, {lang, numericOnly, scale});
         shelfRects.push(...rects);
       }
 
       overlayRects(shelfRects.filter(r=>r.page===0), true);
-      log(`検出: ${shelfRects.length} 個` + (useOCR? "（OCR済）":""));
+      log(`検出: ${shelfRects.length} 個${useOCR? "（OCR済）":""}`);
     }catch(err){
       console.error(err);
-      alert("実行中にエラー。画面下のログを確認してください。");
+      alert("実行中にエラーが発生しました。コンソール/ログを確認してください。");
     }
   });
 
-  // ------- 画像・PDF -------
-  function drawPreview(img){ canvas.width=img.width; canvas.height=img.height; ctx.drawImage(img,0,0); }
+  // --- drawing ---
+  function drawPreview(img){
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+  }
+  function overlayRects(rects, withNumbers=false){
+    ctx.save();
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2;
+    for (const r of rects){
+      ctx.beginPath();
+      ctx.moveTo(r.box_img[0][0], r.box_img[0][1]);
+      for(let i=1;i<4;i++) ctx.lineTo(r.box_img[i][0], r.box_img[i][1]);
+      ctx.closePath();
+      ctx.stroke();
 
+      if (withNumbers && r.numbers?.length){
+        const x = (r.box_img[0][0]+r.box_img[2][0])/2;
+        const y = (r.box_img[0][1]+r.box_img[2][1])/2;
+        const label = r.numbers.join("|");
+        ctx.font="12px ui-monospace, monospace"; ctx.textBaseline="top";
+        const pad=2; const w=ctx.measureText(label).width + pad*2, h=14+pad*2;
+        ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(x-w/2, y-h/2, w, h);
+        ctx.fillStyle="#fff"; ctx.fillText(label, x-w/2+pad, y-h/2+pad);
+      }
+    }
+    ctx.restore();
+  }
+
+  // --- utils ---
+  function downloadText(name,text){
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([text],{type:"text/plain"}));
+    a.download=name; a.click(); URL.revokeObjectURL(a.href);
+  }
   function blobToImage(blob){
     return new Promise((resolve)=>{
       const fr=new FileReader();
@@ -146,26 +191,33 @@
       fr.readAsDataURL(blob);
     });
   }
-
-  // ★ toBlob ではなく toDataURL を使用（ブラウザ環境で null になる事例の回避）
   async function renderPdfToImages(blob,dpi){
-    const pdfjsLib = window['pdfjs-dist/build/pdf']; const arrBuf=await blob.arrayBuffer();
-    const loading=pdfjsLib.getDocument({data:arrBuf}); const pdf=await loading.promise;
-    const scale=dpi/72; const pages=[];
-    for(let i=1;i<=pdf.numPages;i++){
-      const page=await pdf.getPage(i);
-      const viewport=page.getViewport({scale});
-      const off=document.createElement("canvas"); off.width=viewport.width; off.height=viewport.height;
-      const c2d=off.getContext("2d",{willReadFrequently:true});
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    const arrBuf = await blob.arrayBuffer();
+    const loading = pdfjsLib.getDocument({data:arrBuf});
+    const pdf = await loading.promise;
+
+    const scale = dpi/72;
+    const pages = [];
+    for (let i=1;i<=pdf.numPages;i++){
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({scale});
+      const off = document.createElement("canvas");
+      off.width = viewport.width; off.height = viewport.height;
+      const c2d = off.getContext("2d",{willReadFrequently:true});
       await page.render({canvasContext:c2d, viewport}).promise;
-      const dataURL = off.toDataURL("image/png");             // ← ここを変更
-      const img=await new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.src=dataURL; });
+
+      const img = await new Promise(res=> off.toBlob(b=>{
+        const fr=new FileReader();
+        fr.onload=()=>{ const im=new Image(); im.onload=()=>res(im); im.src=fr.result; };
+        fr.readAsDataURL(b);
+      },"image/png"));
+
       pages.push({pageIndex:i-1, img});
     }
     return pages;
   }
 
-  // ------- 矩形検出（OpenCV.js） -------
   function detectRects(img, pageIndex, normW, normH, opts){
     const {minArea=800, minRectangularity=0.7, maxAspect=25} = opts||{};
     const w=img.width, h=img.height;
@@ -174,12 +226,15 @@
     const bin=new cv.Mat(); cv.adaptiveThreshold(gray, bin, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 35, 10);
     const kernel=cv.Mat.ones(3,3, cv.CV_8U), mor=new cv.Mat(); cv.morphologyEx(bin, mor, cv.MORPH_CLOSE, kernel);
     const edges=new cv.Mat(); cv.Canny(mor, edges, 60, 180);
+
     const contours=new cv.MatVector(), hierarchy=new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
     const res=[];
     for(let i=0;i<contours.size();i++){
-      const cnt=contours.get(i); if (cnt.rows<4){ cnt.delete(); continue; }
+      const cnt=contours.get(i);
+      if (cnt.rows<4){ cnt.delete(); continue; }
+
       const rect=cv.minAreaRect(cnt);
       const rw=rect.size.width, rh=rect.size.height;
       if (rw<=1 || rh<=1){ cnt.delete(); continue; }
@@ -189,6 +244,7 @@
 
       const box=cv.RotatedRect.points(rect);
       const poly=box.map(p=>[Math.round(p.x), Math.round(p.y)]);
+
       const contourArea=cv.contourArea(cnt,false);
       const rectangularity=contourArea/(area+1e-6);
       if (rectangularity<minRectangularity){ cnt.delete(); continue; }
@@ -206,26 +262,26 @@
         Math.round(xmax/(w-1)*(normW-1)),
         Math.round(ymax/(h-1)*(normH-1))
       ];
-      const score = 0.5*(rectangularity) + 0.5*(1 - Math.min(asp/ maxAspect, 1));
 
+      const score = 0.5*(rectangularity) + 0.5*(1 - Math.min(asp/maxAspect, 1));
       res.push({ page:pageIndex, box_img:poly, bbox_img:[xmin,ymin,xmax,ymax],
-                 box_norm:boxNorm, bbox_norm:bboxNorm, angle:rect.angle,
-                 area, score, img_w:w, img_h:h });
+                 box_norm:boxNorm, bbox_norm:bboxNorm, angle:rect.angle, area, score, img_w:w, img_h:h });
       cnt.delete();
     }
-
     src.delete(); gray.delete(); bin.delete(); kernel.delete(); mor.delete();
     edges.delete(); contours.delete(); hierarchy.delete();
 
     return nms(res, 0.30);
   }
+
   function nms(items, iouThresh){
     if (!items.length) return [];
     const boxes=items.map(r=>r.bbox_img), scores=items.map(r=>r.score);
     const idxs=scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
     const keep=[];
     while(idxs.length){
-      const i=idxs.shift(); keep.push(i);
+      const i=idxs.shift();
+      keep.push(i);
       const rest=[];
       for (const j of idxs){ if (iouOf(boxes[i], boxes[j])<iouThresh) rest.push(j); }
       idxs.splice(0, idxs.length, ...rest);
@@ -235,37 +291,39 @@
   function iouOf(a,b){
     const [ax1,ay1,ax2,ay2]=a,[bx1,by1,bx2,by2]=b;
     const xx1=Math.max(ax1,bx1), yy1=Math.max(ay1,by1), xx2=Math.min(ax2,bx2), yy2=Math.min(ay2,by2);
-    const w=Math.max(0,xx2-xx1+1), h=Math.max(0,yy2-yy1+1); const inter=w*h;
+    const w=Math.max(0,xx2-xx1+1), h=Math.max(0,yy2-yy1+1);
+    const inter=w*h;
     const areaA=(ax2-ax1+1)*(ay2-ay1+1), areaB=(bx2-bx1+1)*(by2-by1+1);
     return inter/Math.max(1e-6, areaA+areaB-inter);
   }
 
-  // ------- OCR -------
   async function runOCRForRects(rects, img, opts){
     if (!tessWorker || !tessReady){ log("Tesseractワーカー未初期化"); return; }
     const {numericOnly=true, scale=2} = opts||{};
-    const off=document.createElement("canvas"), octx=off.getContext("2d");
 
+    const off=document.createElement("canvas"), octx=off.getContext("2d");
     for (const r of rects){
       const [x1,y1,x2,y2] = r.bbox_img;
-      const w = Math.max(1, x2-x1), h=Math.max(1, y2-y1);
+      const w = Math.max(1, x2-x1), h = Math.max(1, y2-y1);
       off.width = Math.max(1, Math.floor(w*scale));
       off.height= Math.max(1, Math.floor(h*scale));
-      octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality = "high";
+      octx.imageSmoothingEnabled = true;
+      octx.imageSmoothingQuality = "high";
       octx.clearRect(0,0,off.width, off.height);
       octx.drawImage(img, x1, y1, w, h, 0, 0, off.width, off.height);
 
-      await tessWorker.setParameters(numericOnly ? {
-        tessedit_char_whitelist: "0123456789０１２３４５６７８９"
-      } : {});
+      if (tessWorker.setParameters && numericOnly){
+        await tessWorker.setParameters({ tessedit_char_whitelist: "0123456789０１２３４５６７８９" });
+      }
       const { data:{ text } } = await tessWorker.recognize(off);
       const nums = extractNumbers(text);
-      r.text = (text||"").trim();
+      r.text = text.trim();
       r.numbers = Array.from(new Set(nums));
     }
   }
+
   function extractNumbers(s){
-    const t = (s||"").replace(/[０-９]/g, (c)=> String.fromCharCode(c.charCodeAt(0)-0xFEE0));
+    const t = s.replace(/[０-９]/g, (c)=> String.fromCharCode(c.charCodeAt(0)-0xFEE0));
     const m = t.match(/\d+/g);
     return m ? m : [];
   }
