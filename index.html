@@ -1,0 +1,70 @@
+<!-- index.html（変更なし。 corePath は .wasm.js を指す想定） -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>棚の長方形 座標抽出 + OCR (PDF/画像・ローカル実行)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .toolbar input[type="number"] { width: 84px; }
+    .toolbar input[type="checkbox"] { transform: scale(1.2); margin-right: 4px; }
+    canvas { border:1px solid #999; max-width:100%; height:auto; margin-top:12px; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, monospace; background:#f7f7f7; padding:8px; border:1px solid #eee; margin-top:12px; max-height: 30vh; overflow:auto; }
+    .pill { padding:2px 8px; border-radius:999px; background:#eef; border:1px solid #ccd; font-size:12px; }
+    .ok { background:#e9f7ef; border-color:#b7e1c5; }
+    .warn { background:#fff3cd; border-color:#ffeeba; }
+  </style>
+</head>
+<body>
+  <h2>棚の長方形 座標抽出 + OCR</h2>
+  <div class="toolbar">
+    <input id="fileInput" type="file" accept="application/pdf,image/*" />
+    <label>正規化:
+      <input id="normW" type="number" value="1240"> ×
+      <input id="normH" type="number" value="1754">
+    </label>
+    <label>DPI:
+      <input id="dpi" type="number" value="300">
+    </label>
+    <label>最小面積:
+      <input id="minArea" type="number" value="800">
+    </label>
+    <label>矩形性:
+      <input id="minRect" type="number" value="0.70" step="0.01">
+    </label>
+    <label>最大アスペクト:
+      <input id="maxAsp" type="number" value="25">
+    </label>
+    <label><input id="useOCR" type="checkbox" checked>OCR実行</label>
+    <label>言語:
+      <select id="ocrLang">
+        <option value="eng" selected>eng (数字中心)</option>
+        <option value="jpn">jpn</option>
+      </select>
+    </label>
+    <label><input id="ocrNumeric" type="checkbox" checked>数字のみ抽出</label>
+    <label>拡大率:
+      <input id="ocrScale" type="number" value="2" step="0.25" min="1">
+    </label>
+    <button id="runBtn">実行</button>
+    <button id="expCsvBtn">CSV</button>
+    <button id="expJsonBtn">JSON</button>
+    <span id="opencvState" class="pill">OpenCV.js: 読み込み中...</span>
+    <span id="pdfjsState" class="pill">pdf.js: 読み込み中...</span>
+    <span id="tessState" class="pill warn">Tesseract: 未初期化</span>
+  </div>
+
+  <canvas id="canvas" width="800" height="600"></canvas>
+  <div id="log"></div>
+
+  <script src="./vendor/opencv/opencv.js"></script>
+  <script src="./vendor/pdfjs/pdf.min.js"></script>
+  <script>
+    window['pdfjs-dist/build/pdf'].GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.js";
+  </script>
+  <script src="./vendor/tesseract/tesseract.min.js"></script>
+  <script src="./script.js"></script>
+</body>
+</html>
