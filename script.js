@@ -52,35 +52,26 @@
   });
 
   // v4/v5 どちらでも安全に通る Tesseract 初期化
-  async function ensureTesseract(lang){
+  
+async function ensureTesseract(lang){
     if (tessWorker && tessReady) return;
+    if (!window.Tesseract){ tessState.textContent="Tesseract: 未読み込み"; log("Tesseract.js が読み込まれていません."); return; }
 
-    if (!window.Tesseract){
-      tessState.textContent = "Tesseract: 未読み込み";
-      log("Tesseract.js が読み込まれていません.");
-      return;
-    }
-
-    // 絶対URL化（Worker からの相対解決ブレ対策）
-    const workerPath = new URL("vendor/tesseract/worker.min.js", BASE).href;
-    const corePath   = new URL("vendor/tesseract/tesseract-core.wasm.js", BASE).href;
-    const langPath   = new URL("vendor/tesseract/lang-data", BASE).href;
+    // Use CDN v4 to avoid v5 Worker bug on some environments (GitHub Pages)
+    const workerPath = "https://unpkg.com/tesseract.js@4.0.2/dist/worker.min.js";
+    const corePath   = "https://unpkg.com/tesseract.js-core@4.0.2/tesseract-core.wasm.js";
+    // absolute lang path based on site base
+    const langPath   = new URL("vendor/tesseract/lang-data/", BASE).href;
 
     try{
-      log(`Init Tesseract: worker=${workerPath}, core=${corePath}`);
-      // v5 も v4 もこの形でOK（不要オプションは渡さない）
+      log(`Init Tesseract v4: worker=${workerPath}, core=${corePath}`);
       tessWorker = await Tesseract.createWorker({ workerPath, corePath, langPath });
-
-      // v4/v5 共通の流れ
-      if (tessWorker.load)        await tessWorker.load();           // v5 では存在、v4 では no-op
+      if (tessWorker.load) await tessWorker.load();
       await tessWorker.loadLanguage(lang);
       await tessWorker.initialize(lang);
-
       tessReady = true;
       tessState.textContent = "Tesseract: OK";
       tessState.classList.add("ok");
-
-      // 進捗ロガーは渡さない（postMessage で clone 不可のため）
       log("Tesseract initialized.");
     }catch(err){
       tessReady = false;
@@ -88,7 +79,8 @@
       log("Tesseract init error: " + (err?.message || String(err)));
       throw err;
     }
-  }
+}
+}
 
   // --- UI events ---
   $("fileInput").addEventListener("change",(e)=>{
