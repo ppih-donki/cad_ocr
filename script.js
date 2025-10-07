@@ -31,7 +31,7 @@
     return m ? m[0] : "eng";
   }
 
-  // ------- Tesseract 初期化 -------
+  // ------- Tesseract 初期化（詳細ログ付き）-------
   async function ensureTesseract(lang){
     if (tessWorker && tessReady) return;
     if (!window.Tesseract){ log("Tesseract.js が読み込まれていません。"); return; }
@@ -39,26 +39,34 @@
     // 末尾スラッシュ必須
     const workerPath = "./vendor/tesseract/worker.min.js";
     const corePath   = "./vendor/tesseract/tesseract-core.wasm.js";
-    const langPath   = "./vendor/tesseract/lang-data/";     // ★ 末尾 /
+    const langPath   = "./vendor/tesseract/lang-data/";
 
     try{
       log(`Init Tesseract: worker=${workerPath}, core=${corePath}, langPath=${langPath}, lang=${lang}`);
 
-      // 事前に存在チェック（404なら原因を即ログ出し）
+      // 言語ファイルの事前存在チェック
       const testUrl = `${langPath}${lang}.traineddata`;
       const head = await fetch(testUrl, { method:"HEAD" });
+      log(`HEAD ${testUrl} => ${head.status}`);
       if (!head.ok){
         log(`✗ 言語ファイルが見つかりません: ${testUrl} (status ${head.status})`);
-        log("→ GitHub Pages にファイルが無い / パス・大文字小文字が違う / lang の値が不正 などを確認してください。");
         throw new Error(`traineddata not found: ${testUrl}`);
-      }else{
+      } else {
         log(`✓ 言語ファイル検出: ${testUrl}`);
       }
 
+      log("createWorker() 開始");
       // logger は渡さない（DataCloneError 回避）
       tessWorker = await Tesseract.createWorker({ workerPath, corePath, langPath });
+      log("createWorker() 完了");
+
+      log("loadLanguage() 開始");
       await tessWorker.loadLanguage(lang);
+      log("loadLanguage() 完了");
+
+      log("initialize() 開始");
       await tessWorker.initialize(lang);
+      log("initialize() 完了");
 
       tessReady = true;
       tessState?.classList.add("ok");
@@ -82,7 +90,7 @@
     if (!fileBlob){ alert("ファイルを選択してください"); return; }
 
     const useOCR = $("useOCR").checked;
-    const lang = normalizeLang($("ocrLang").value);     // ★ 正規化
+    const lang = normalizeLang($("ocrLang").value);
     const numericOnly = $("ocrNumeric").checked;
     const scale = Math.max(1, parseFloat($("ocrScale").value)||2);
 
@@ -100,6 +108,7 @@
 
       const isPdf = fileBlob.type === "application/pdf" || /\.pdf$/i.test(fileBlob.name);
       if (isPdf){
+        log("PDF → 画像レンダリング開始");
         const pages = await renderPdfToImages(fileBlob, dpi);
         log(`PDFページ数: ${pages.length}`);
         if (pages.length) drawPreview(pages[0].img);
@@ -110,6 +119,7 @@
           shelfRects.push(...rects);
         }
       }else{
+        log("画像処理開始");
         const img = await blobToImage(fileBlob);
         drawPreview(img);
         const rects = detectRects(img, 0, normW, normH,
@@ -122,12 +132,13 @@
       log(`検出: ${shelfRects.length} 個` + (useOCR? "（OCR済）":""));
     }catch(err){
       console.error(err);
-      alert("実行中にエラー。ログの ✗/✓ 行と URL を確認してください。");
+      alert("実行中にエラー。画面下のログを確認してください。");
     }
   });
 
   // ------- 画像・PDF -------
   function drawPreview(img){ canvas.width=img.width; canvas.height=img.height; ctx.drawImage(img,0,0); }
+
   function blobToImage(blob){
     return new Promise((resolve)=>{
       const fr=new FileReader();
@@ -135,6 +146,8 @@
       fr.readAsDataURL(blob);
     });
   }
+
+  // ★ toBlob ではなく toDataURL を使用（ブラウザ環境で null になる事例の回避）
   async function renderPdfToImages(blob,dpi){
     const pdfjsLib = window['pdfjs-dist/build/pdf']; const arrBuf=await blob.arrayBuffer();
     const loading=pdfjsLib.getDocument({data:arrBuf}); const pdf=await loading.promise;
@@ -145,10 +158,8 @@
       const off=document.createElement("canvas"); off.width=viewport.width; off.height=viewport.height;
       const c2d=off.getContext("2d",{willReadFrequently:true});
       await page.render({canvasContext:c2d, viewport}).promise;
-      const img=await new Promise(res=> off.toBlob(b=>{
-        const fr=new FileReader(); fr.onload=()=>{ const im=new Image(); im.onload=()=>res(im); im.src=fr.result; };
-        fr.readAsDataURL(b);
-      },"image/png"));
+      const dataURL = off.toDataURL("image/png");             // ← ここを変更
+      const img=await new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.src=dataURL; });
       pages.push({pageIndex:i-1, img});
     }
     return pages;
