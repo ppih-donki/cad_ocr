@@ -9,7 +9,7 @@
 
   const log = (m)=>{ logEl.textContent += m+"\n"; logEl.scrollTop=logEl.scrollHeight; };
 
-  // --- OpenCV.js 初期化待ち ---
+  // -------- OpenCV.js 初期化待ち --------
   const waitOpenCV = new Promise((resolve)=>{
     const ok=()=>{ opencvReady=true; cvState.textContent="OpenCV.js: OK"; cvState.classList.add("ok"); resolve(); };
     if (typeof cv !== "undefined" && cv.onRuntimeInitialized) cv.onRuntimeInitialized = ok;
@@ -18,7 +18,7 @@
     }
   });
 
-  // --- pdf.js 初期化待ち ---
+  // -------- pdf.js 初期化待ち --------
   const waitPDFJS = new Promise((resolve)=>{
     const setOk=()=>{ pdfjsReady=true; pdfState.textContent="pdf.js: OK"; pdfState.classList.add("ok"); resolve(); };
     const lib=window['pdfjs-dist/build/pdf'];
@@ -28,7 +28,13 @@
     }
   });
 
-  // --- Tesseract.js v5 初期化（logger は渡さないのがポイント） ---
+  // 言語コードを正規化（"eng（数字中心）" → "eng", "jpn, 日本語" → "jpn" など）
+  function normalizeLang(value){
+    const m = String(value || "").toLowerCase().match(/[a-z+]+/g);
+    return m ? m.join("+") : "eng";
+  }
+
+  // -------- Tesseract.js v5 初期化 --------
   async function ensureTesseract(lang){
     if (tessWorker && tessReady) return;
     if (!window.Tesseract){ log("Tesseract.js が読み込まれていません。"); return; }
@@ -39,7 +45,7 @@
       const langPath   = "./vendor/tesseract/lang-data/";             // 末尾 / 必須
       log(`Init Tesseract: worker=${workerPath}, core=${corePath}, langPath=${langPath}`);
 
-      // ★ logger は渡さない（渡すと DataCloneError になる環境がある）
+      // logger は渡さない（環境により DataCloneError を誘発）
       tessWorker = await Tesseract.createWorker({ workerPath, corePath, langPath });
 
       await tessWorker.loadLanguage(lang);
@@ -57,7 +63,7 @@
     }
   }
 
-  // --- UI ---
+  // -------- UI --------
   $("fileInput").addEventListener("change",(e)=>{
     fileBlob = e.target.files?.[0] ?? null;
     log(`選択: ${fileBlob ? fileBlob.name : "(なし)"}`);
@@ -67,7 +73,7 @@
     if (!fileBlob){ alert("ファイルを選択してください"); return; }
 
     const useOCR = $("useOCR").checked;
-    const lang = $("ocrLang").value;
+    const lang = normalizeLang($("ocrLang").value);     // ★ 正規化してから使用
     const numericOnly = $("ocrNumeric").checked;
     const scale = Math.max(1, parseFloat($("ocrScale").value)||2);
 
@@ -130,7 +136,7 @@
     downloadText("shelves_ocr.json", JSON.stringify(shelfRects,null,2));
   });
 
-  // --- 共通ユーティリティ ---
+  // -------- 共通ユーティリティ --------
   function downloadText(name,text){
     const a=document.createElement("a");
     a.href=URL.createObjectURL(new Blob([text],{type:"text/plain"}));
@@ -144,7 +150,7 @@
     });
   }
 
-  // --- PDF→画像 ---
+  // -------- PDF→画像 --------
   async function renderPdfToImages(blob,dpi){
     const pdfjsLib = window['pdfjs-dist/build/pdf']; const arrBuf=await blob.arrayBuffer();
     const loading=pdfjsLib.getDocument({data:arrBuf}); const pdf=await loading.promise;
@@ -164,7 +170,7 @@
     return pages;
   }
 
-  // --- 棚の長方形検出（OpenCV.js） ---
+  // -------- 棚の長方形検出（OpenCV.js） --------
   function detectRects(img, pageIndex, normW, normH, opts){
     const {minArea=800, minRectangularity=0.7, maxAspect=25} = opts||{};
     const w=img.width, h=img.height;
@@ -220,7 +226,7 @@
     return nms(res, 0.30);
   }
 
-  // --- NMS ---
+  // -------- NMS --------
   function nms(items, iouThresh){
     if (!items.length) return [];
     const boxes=items.map(r=>r.bbox_img), scores=items.map(r=>r.score);
@@ -242,7 +248,7 @@
     return inter/Math.max(1e-6, areaA+areaB-inter);
   }
 
-  // --- OCR（矩形ごとに実行） ---
+  // -------- OCR（矩形ごと） --------
   async function runOCRForRects(rects, img, opts){
     if (!tessWorker || !tessReady){ log("Tesseractワーカー未初期化"); return; }
     const {numericOnly=true, scale=2} = opts||{};
@@ -257,7 +263,6 @@
       octx.clearRect(0,0,off.width, off.height);
       octx.drawImage(img, x1, y1, w, h, 0, 0, off.width, off.height);
 
-      // 数字優先
       await tessWorker.setParameters(
         numericOnly ? { tessedit_char_whitelist: "0123456789０１２３４５６７８９" } : {}
       );
